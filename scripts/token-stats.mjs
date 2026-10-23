@@ -8,7 +8,7 @@
 // 插件设置（plugin.json userConfig）：用户在客户端“插件详情 → Advanced”里填写，
 // 持久化于 ~/.zcode/cli/config.json 的 plugins.options["token-rate@<市场>"]；
 // 读取优先级 TOKEN_RATE_* 环境变量 > plugins.options > userConfig 默认值。
-// 输出语言：TOKEN_RATE_LANG 环境变量 > 插件设置 language > config.json 的 locale/language 键 > 系统 locale。
+// 输出语言：TOKEN_RATE_LANG 环境变量 > config.json 的 ui.locale（ZCode 界面语言）> 系统 locale。
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -42,7 +42,7 @@ export const DEFAULT_SETTINGS = {
   injectLine: true, // 是否每轮注入速率行
   lineStyle: 'compact', // compact=极简一行 | detailed=完整统计
   windowMinutes: 10, // 吞吐滑动窗口（分钟）
-  language: 'auto', // zh | en | auto
+  language: 'auto', // auto=跟随 ZCode 界面语言 | zh | en
 };
 
 export function loadSettings() {
@@ -50,7 +50,9 @@ export function loadSettings() {
   const o = pluginOptions(readZcodeConfig());
   if (o && typeof o === 'object') {
     if (typeof o.inject_line === 'boolean') s.injectLine = o.inject_line;
-    if (typeof o.line_style === 'string' && o.line_style.trim()) s.lineStyle = o.line_style.trim().toLowerCase();
+    // detailed_line 是设置页的开关；line_style 是旧版文本键，继续兼容已保存的值。
+    if (typeof o.detailed_line === 'boolean') s.lineStyle = o.detailed_line ? 'detailed' : 'compact';
+    else if (typeof o.line_style === 'string' && o.line_style.trim()) s.lineStyle = o.line_style.trim().toLowerCase();
     const w = Number(o.window_minutes);
     if (Number.isFinite(w) && w > 0) s.windowMinutes = w;
     if (typeof o.language === 'string' && o.language.trim()) s.language = o.language.trim().toLowerCase();
@@ -67,20 +69,35 @@ export function loadSettings() {
   return s;
 }
 
+// ZCode 界面语言持久化在 config.json 的 ui.locale（zh-CN / en-US / auto）。
+// auto 时按 ZCode 自身的解析顺序回退：LC_ALL / LC_MESSAGES / LANG / LANGUAGE → 系统 locale。
+function systemLang() {
+  for (const key of ['LC_ALL', 'LC_MESSAGES', 'LANG', 'LANGUAGE']) {
+    const raw = String(process.env[key] || '').trim();
+    if (!raw) continue;
+    const parts = key === 'LANGUAGE' ? raw.split(':') : [raw];
+    for (const part of parts) {
+      const l = part.trim().toLowerCase();
+      if (l.startsWith('zh')) return 'zh';
+      if (l.startsWith('en')) return 'en';
+    }
+  }
+  const loc = (Intl.DateTimeFormat().resolvedOptions().locale || '').toLowerCase();
+  return loc.startsWith('zh') ? 'zh' : 'en';
+}
+
 export function detectLang() {
   const env = (process.env.TOKEN_RATE_LANG || '').trim().toLowerCase();
   if (env.startsWith('zh')) return 'zh';
   if (env.startsWith('en')) return 'en';
-  const setting = pluginOptions(readZcodeConfig())?.language;
-  const sl = String(setting || '').trim().toLowerCase();
-  if (sl.startsWith('zh')) return 'zh';
-  if (sl.startsWith('en')) return 'en';
-  const cfg = readZcodeConfig();
-  const l = String(cfg?.locale || cfg?.language || '').trim().toLowerCase();
-  if (l.startsWith('zh')) return 'zh';
-  if (l.startsWith('en')) return 'en';
-  const loc = (Intl.DateTimeFormat().resolvedOptions().locale || '').toLowerCase();
-  return loc.startsWith('zh') ? 'zh' : 'en';
+  // 插件设置 language：zh / en 强制指定；auto（默认）继续跟随 ZCode 界面语言。
+  const setting = String(pluginOptions(readZcodeConfig())?.language || '').trim().toLowerCase();
+  if (setting.startsWith('zh')) return 'zh';
+  if (setting.startsWith('en')) return 'en';
+  const ui = String(readZcodeConfig()?.ui?.locale || '').trim().toLowerCase();
+  if (ui.startsWith('zh')) return 'zh';
+  if (ui.startsWith('en')) return 'en';
+  return systemLang();
 }
 
 export function normalizeSessionId(id) {

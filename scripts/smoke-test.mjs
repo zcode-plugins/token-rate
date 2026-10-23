@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // 冒烟测试：不依赖本机 ZCode 会话数据，可在任意环境（含 CI）运行。
 // 覆盖：语法检查、MCP 握手 + tools/list + tools/call（正常/错误路径）、
-// hook 模式在无 rollout 数据时静默退出、输出语言切换、--list、
-// 插件设置加载（默认值/配置文件/环境变量覆盖）、compact/detailed 行样式、关闭注入。
+// hook 模式在无 rollout 数据时静默退出、--list、
+// 插件设置加载（默认值/配置文件/环境变量覆盖）、输出语言跟随 ZCode 界面语言、
+// compact/detailed 行样式、关闭注入。
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -98,15 +99,18 @@ function settingsProbe(env) {
   JSON.stringify(d) === JSON.stringify(DEFAULT_SETTINGS)
     ? ok('settings defaults') : fail('settings defaults', JSON.stringify(d));
 
-  // 4.2 config.json plugins.options → 生效
+  // 4.2 config.json plugins.options → 生效（detailed_line 开关；旧版 line_style 仍兼容）
   fs.mkdirSync(path.join(tmp, '.zcode', 'cli'), { recursive: true });
-  fs.writeFileSync(
+  const writeOptions = (options) => fs.writeFileSync(
     path.join(tmp, '.zcode', 'cli', 'config.json'),
-    JSON.stringify({ plugins: { options: { 'token-rate@dev-test': { line_style: 'detailed', window_minutes: 30, inject_line: false, language: 'en' } } } }),
+    JSON.stringify({ plugins: { options: { 'token-rate@dev-test': options } } }),
   );
+  writeOptions({ detailed_line: true, window_minutes: 30, inject_line: false, language: 'en' });
   const c = settingsProbe(mkEnv());
-  c?.lineStyle === 'detailed' && c?.windowMinutes === 30 && c?.injectLine === false && c?.language === 'en'
-    ? ok('settings from config.json') : fail('settings from config.json', JSON.stringify(c));
+  writeOptions({ line_style: 'detailed' });
+  const legacy = settingsProbe(mkEnv());
+  c?.lineStyle === 'detailed' && c?.windowMinutes === 30 && c?.injectLine === false && c?.language === 'en' && legacy?.lineStyle === 'detailed'
+    ? ok('settings from config.json') : fail('settings from config.json', JSON.stringify({ c, legacy }));
 
   // 4.3 环境变量覆盖配置文件
   const e = settingsProbe(mkEnv({ TOKEN_RATE_STYLE: 'compact', TOKEN_RATE_INJECT: '1', TOKEN_RATE_WINDOW: '5' }));
@@ -117,7 +121,39 @@ function settingsProbe(env) {
   const b = settingsProbe(mkEnv({ TOKEN_RATE_STYLE: 'bogus' }));
   b?.lineStyle === 'compact' ? ok('settings invalid style fallback') : fail('settings invalid style fallback', JSON.stringify(b));
 
-  // 4.5 hook 行样式 + 关闭注入（端到端：伪造 rollout 数据）
+  // 4.5 输出语言跟随 ZCode 界面语言：config.json 的 ui.locale；auto 时按 LANG 解析
+  function langProbe(env) {
+    const r = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', `import { detectLang } from ${JSON.stringify(pathToFileURL(path.join(root, 'scripts', 'token-stats.mjs')).href)}; console.log(detectLang());`],
+      { env, encoding: 'utf8', timeout: 20000 },
+    );
+    return (r.stdout || '').trim();
+  }
+  const langEnv = (extra = {}) => {
+    const env = mkEnv(extra);
+    for (const k of ['TOKEN_RATE_LANG', 'LC_ALL', 'LC_MESSAGES', 'LANG', 'LANGUAGE']) delete env[k];
+    return { ...env, ...extra };
+  };
+  const writeConfig = (cfg) => fs.writeFileSync(path.join(tmp, '.zcode', 'cli', 'config.json'), JSON.stringify(cfg));
+
+  writeConfig({ ui: { locale: 'en-US' } });
+  langProbe(langEnv()) === 'en' ? ok('language follows ui.locale en-US') : fail('language follows ui.locale en-US', langProbe(langEnv()));
+  writeConfig({ ui: { locale: 'zh-CN' } });
+  langProbe(langEnv()) === 'zh' ? ok('language follows ui.locale zh-CN') : fail('language follows ui.locale zh-CN', langProbe(langEnv()));
+  writeConfig({ ui: { locale: 'auto' } });
+  langProbe(langEnv({ LANG: 'zh_CN.UTF-8' })) === 'zh'
+    ? ok('language auto follows LANG') : fail('language auto follows LANG', langProbe(langEnv({ LANG: 'zh_CN.UTF-8' })));
+
+  // 4.5b 插件 language 设置：zh/en 强制覆盖 ui.locale；auto 继续跟随 ui.locale
+  writeConfig({ ui: { locale: 'zh-CN' }, plugins: { options: { 'token-rate@dev-test': { language: 'en' } } } });
+  const forced = langProbe(langEnv());
+  writeConfig({ ui: { locale: 'zh-CN' }, plugins: { options: { 'token-rate@dev-test': { language: 'auto' } } } });
+  const auto = langProbe(langEnv());
+  forced === 'en' && auto === 'zh'
+    ? ok('language setting overrides ui.locale') : fail('language setting overrides ui.locale', JSON.stringify({ forced, auto }));
+
+  // 4.6 hook 行样式 + 关闭注入（端到端：伪造 rollout 数据）
   fs.mkdirSync(path.join(tmp, '.zcode', 'cli', 'rollout'), { recursive: true });
   const rec = (t0) => JSON.stringify({ startedAt: new Date(t0).toISOString(), completedAt: new Date(t0 + 4000).toISOString(), durationMs: 4000, model: { modelId: 'smoke-model' }, usage: { inputTokens: 1000, cacheReadTokens: 800, outputTokens: 200, totalTokens: 1200 } });
   fs.writeFileSync(path.join(tmp, '.zcode', 'cli', 'rollout', 'model-io-session_smoke.jsonl'), `${rec(Date.now() - 60000)}\n${rec(Date.now() - 30000)}\n`);
@@ -137,7 +173,7 @@ function settingsProbe(env) {
   off.status === 0 && (off.stdout || '').trim() === ''
     ? ok('hook silent when inject_line off') : fail('hook silent when inject_line off', `exit=${off.status} out=${JSON.stringify(off.stdout).slice(0, 120)}`);
 
-  // 4.6 hookLine 纯格式化（进程内，en/zh × compact/detailed）
+  // 4.7 hookLine 纯格式化（进程内，en/zh × compact/detailed）
   const fakeStats = { totals: { input: 1234, cacheHitPct: 80, output: 567 }, generation: { recentTps: 12.3, avgTps: 10 }, throughput: { outTps: 5 }, windowMinutes: 10, calls: 3, spanMs: 60000 };
   const zhC = hookLine(fakeStats, 'zh', 'compact');
   zhC.startsWith('[token-rate] ⚡12.3 tok/s · 入 1.2k / 出 567\n') ? ok('hookLine zh compact') : fail('hookLine zh compact', JSON.stringify(zhC));

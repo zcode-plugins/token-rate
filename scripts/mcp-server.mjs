@@ -16,7 +16,7 @@ import {
 
 const LANG = detectLang();
 const SETTINGS = loadSettings();
-const SERVER_INFO = { name: "token-rate", version: "0.3.0" };
+const SERVER_INFO = { name: "token-rate", version: "0.3.3" };
 
 const TOOL_DESC = {
   zh: "实时统计 ZCode 会话的 token 用量与速率：生成速率（tok/s，纯模型输出）、吞吐（墙钟）、累计输入/输出、缓存命中率、思考 token、会话时长。数据来自本机 ~/.zcode/cli/rollout 的会话记录，随会话进行实时更新。",

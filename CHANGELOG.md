@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-10-23
+
+### Changed
+
+- Restored the plugin `language` setting (`auto` / `zh` / `en`): `auto` (default) follows the ZCode UI language (`ui.locale`), while `zh` / `en` force a language. `TOKEN_RATE_LANG` still overrides everything. The setting's description now states the `auto` behavior explicitly.
+- Replaced the free-text `line_style` option (`compact` / `detailed`) with the `detailed_line` switch. ZCode's plugin settings form renders only text/number inputs and switches — the manifest schema has no `enum`/`select` type — so a dropdown cannot be declared; two-state options are exposed as switches instead. Values previously saved under `line_style` are still honored.
+
+## [0.3.2] - 2026-10-23
+
+### Changed
+
+- Output language now follows the ZCode UI language. `detectLang()` reads `ui.locale` (`zh-CN` / `en-US` / `auto`) from `~/.zcode/cli/config.json`, the key ZCode itself writes; `auto` resolves through `LC_ALL` / `LC_MESSAGES` / `LANG` / `LANGUAGE` and then the system locale, matching ZCode's own behavior.
+- Removed the plugin `language` setting (`zh` / `en` / `auto`): the output simply follows ZCode, so there is nothing to configure. `TOKEN_RATE_LANG` remains as an explicit scripting override.
+
+### Fixed
+
+- Language detection previously looked for `locale` / `language` keys that ZCode never writes, so a UI language different from the system locale was ignored.
+
 ## [0.3.1] - 2026-10-23
 
 ### Fixed

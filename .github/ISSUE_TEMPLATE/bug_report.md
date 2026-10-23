@@ -25,7 +25,7 @@ What you expected to happen instead.
 - OS (Windows / macOS / Linux):
 - Node version (`node --version`):
 - Token Pulse version (`/token-rate` report footer or plugin details):
-- Output language mode (default zh / en / `TOKEN_RATE_LANG=...`):
+- ZCode UI language (`ui.locale` in `~/.zcode/cli/config.json`) or `TOKEN_RATE_LANG` override:
 
 **Logs or screenshots** / 日志或截图
 
