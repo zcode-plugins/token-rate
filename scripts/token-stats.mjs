@@ -5,7 +5,10 @@
 // usage 可能在记录顶层，也可能在 response.usage（不同版本兼容）。
 // 被 CLI（默认/--json/--list）、hook（--hook，输出严格 JSON additionalContext）、
 // 以及 scripts/mcp-server.mjs（MCP 工具 token_rate）共用。
-// 输出语言：TOKEN_RATE_LANG 环境变量 > ~/.zcode/cli/config.json 的 locale/language 键 > 系统 locale（zh* → 中文，否则英文）。
+// 插件设置（plugin.json userConfig）：用户在客户端“插件详情 → Advanced”里填写，
+// 持久化于 ~/.zcode/cli/config.json 的 plugins.options["token-rate@<市场>"]；
+// 读取优先级 TOKEN_RATE_* 环境变量 > plugins.options > userConfig 默认值。
+// 输出语言：TOKEN_RATE_LANG 环境变量 > 插件设置 language > config.json 的 locale/language 键 > 系统 locale。
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -15,18 +18,67 @@ import { pathToFileURL } from 'node:url';
 const ROLLOUT_DIR = path.join(os.homedir(), '.zcode', 'cli', 'rollout');
 const RECENT_CALLS = 5; // “最近速率”取最近 N 次模型调用
 
+let cachedConfig; // undefined=未读，null=读取失败
+function readZcodeConfig() {
+  if (cachedConfig === undefined) {
+    try {
+      cachedConfig = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.zcode', 'cli', 'config.json'), 'utf8'));
+    } catch {
+      cachedConfig = null;
+    }
+  }
+  return cachedConfig;
+}
+
+// 插件配置值挂在 plugins.options["token-rate@<市场ID"] 下，市场 ID 与安装来源有关，按前缀匹配。
+function pluginOptions(cfg) {
+  const options = cfg?.plugins?.options;
+  if (!options || typeof options !== 'object') return null;
+  const key = Object.keys(options).find((k) => /^token-rate@/.test(k));
+  return key ? options[key] : null;
+}
+
+export const DEFAULT_SETTINGS = {
+  injectLine: true, // 是否每轮注入速率行
+  lineStyle: 'compact', // compact=极简一行 | detailed=完整统计
+  windowMinutes: 10, // 吞吐滑动窗口（分钟）
+  language: 'auto', // zh | en | auto
+};
+
+export function loadSettings() {
+  const s = { ...DEFAULT_SETTINGS };
+  const o = pluginOptions(readZcodeConfig());
+  if (o && typeof o === 'object') {
+    if (typeof o.inject_line === 'boolean') s.injectLine = o.inject_line;
+    if (typeof o.line_style === 'string' && o.line_style.trim()) s.lineStyle = o.line_style.trim().toLowerCase();
+    const w = Number(o.window_minutes);
+    if (Number.isFinite(w) && w > 0) s.windowMinutes = w;
+    if (typeof o.language === 'string' && o.language.trim()) s.language = o.language.trim().toLowerCase();
+  }
+  // 环境变量覆盖（无 UI 或脚本化场景）
+  const inject = String(process.env.TOKEN_RATE_INJECT || '').trim().toLowerCase();
+  if (['0', 'false', 'off'].includes(inject)) s.injectLine = false;
+  if (['1', 'true', 'on'].includes(inject)) s.injectLine = true;
+  const style = String(process.env.TOKEN_RATE_STYLE || '').trim().toLowerCase();
+  if (style) s.lineStyle = style;
+  const envWin = Number(process.env.TOKEN_RATE_WINDOW);
+  if (Number.isFinite(envWin) && envWin > 0) s.windowMinutes = envWin;
+  if (s.lineStyle !== 'detailed') s.lineStyle = 'compact'; // 未知取值一律回退 compact
+  return s;
+}
+
 export function detectLang() {
   const env = (process.env.TOKEN_RATE_LANG || '').trim().toLowerCase();
   if (env.startsWith('zh')) return 'zh';
   if (env.startsWith('en')) return 'en';
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.zcode', 'cli', 'config.json'), 'utf8'));
-    const l = String(cfg.locale || cfg.language || '').trim().toLowerCase();
-    if (l.startsWith('zh')) return 'zh';
-    if (l.startsWith('en')) return 'en';
-  } catch {
-    /* 无配置文件或无该键 */
-  }
+  const setting = pluginOptions(readZcodeConfig())?.language;
+  const sl = String(setting || '').trim().toLowerCase();
+  if (sl.startsWith('zh')) return 'zh';
+  if (sl.startsWith('en')) return 'en';
+  const cfg = readZcodeConfig();
+  const l = String(cfg?.locale || cfg?.language || '').trim().toLowerCase();
+  if (l.startsWith('zh')) return 'zh';
+  if (l.startsWith('en')) return 'en';
   const loc = (Intl.DateTimeFormat().resolvedOptions().locale || '').toLowerCase();
   return loc.startsWith('zh') ? 'zh' : 'en';
 }
@@ -212,6 +264,7 @@ const L = {
     errHint: '用 --list 查看可用会话。',
     errNoUsage: (f) => `会话文件没有可用的 usage 记录：${f}`,
     // hook 行
+    hCompact: (r, i, o) => `⚡${r} tok/s · 入 ${i} / 出 ${o}`,
     hGen: (r, a) => `⚡生成 ${r} tok/s（均值 ${a}）`,
     hThr: (w, o) => ` · 近${w}分钟吞吐 出 ${o}/s`,
     hTot: (i, p, o) => ` · 累计 in ${i}（缓存 ${p}%）/ out ${o}`,
@@ -237,6 +290,7 @@ const L = {
     errDir: (d) => `Search dir: ${d}`,
     errHint: 'Use --list to see available sessions.',
     errNoUsage: (f) => `No usable usage records in session file: ${f}`,
+    hCompact: (r, i, o) => `⚡${r} tok/s · in ${i} / out ${o}`,
     hGen: (r, a) => `⚡gen ${r} tok/s (avg ${a})`,
     hThr: (w, o) => ` · ${w}-min throughput out ${o}/s`,
     hTot: (i, p, o) => ` · total in ${i} (cache ${p}%) / out ${o}`,
@@ -264,16 +318,22 @@ export function formatReport(stats, file, lang = detectLang()) {
   return lines.join('\n');
 }
 
-// hook 注入两行：数据行（供原样展示给用户）+ 指令行（要求模型在回复结尾复述数据行）
-export function hookLine(stats, lang = detectLang()) {
+// hook 注入两行：数据行（供原样展示给用户）+ 指令行（要求模型在回复结尾复述数据行）。
+// style：compact（默认，极简一行：速率 + 累计出入）| detailed（完整统计）。
+export function hookLine(stats, lang = detectLang(), style = 'compact') {
   const t = L[lang] ?? L.zh;
   const u = stats.totals;
-  const data =
-    `[token-rate] ` +
-    t.hGen(fmtRate(stats.generation.recentTps), fmtRate(stats.generation.avgTps)) +
-    t.hThr(stats.windowMinutes, fmtRate(stats.throughput.outTps)) +
-    t.hTot(fmtCompact(u.input), u.cacheHitPct.toFixed(0), fmtCompact(u.output)) +
-    t.hCalls(stats.calls, fmtDur(stats.spanMs));
+  let data;
+  if (style === 'detailed') {
+    data =
+      `[token-rate] ` +
+      t.hGen(fmtRate(stats.generation.recentTps), fmtRate(stats.generation.avgTps)) +
+      t.hThr(stats.windowMinutes, fmtRate(stats.throughput.outTps)) +
+      t.hTot(fmtCompact(u.input), u.cacheHitPct.toFixed(0), fmtCompact(u.output)) +
+      t.hCalls(stats.calls, fmtDur(stats.spanMs));
+  } else {
+    data = `[token-rate] ` + t.hCompact(fmtRate(stats.generation.recentTps), fmtCompact(u.input), fmtCompact(u.output));
+  }
   return data + '\n' + t.hInstruction;
 }
 
@@ -290,14 +350,14 @@ export function formatSessionList(sessions, lang = detectLang()) {
 // ---------- CLI ----------
 
 function parseArgs(argv) {
-  const out = { session: undefined, window: 10, json: false, hook: false, list: false };
+  const out = { session: undefined, window: undefined, json: false, hook: false, list: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') out.json = true;
     else if (a === '--hook') out.hook = true;
     else if (a === '--list') out.list = true;
     else if (a === '--session') out.session = argv[++i];
-    else if (a === '--window') out.window = Number(argv[++i]) || 10;
+    else if (a === '--window') out.window = Number(argv[++i]);
     else out.session = a;
   }
   return out;
@@ -305,6 +365,8 @@ function parseArgs(argv) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const settings = loadSettings();
+  const window = Number.isFinite(args.window) && args.window > 0 ? args.window : settings.windowMinutes;
   const lang = detectLang();
   const T = L[lang] ?? L.zh;
 
@@ -322,9 +384,10 @@ async function main() {
   // hook 模式：任何失败都静默退出，绝不阻塞会话；stdout 必须是严格 JSON
   if (args.hook) {
     try {
+      if (!settings.injectLine) return; // 用户在插件设置里关闭了注入
       if (!file) return;
-      const stats = computeStats(await readRecords(file), args.window);
-      if (stats) console.log(JSON.stringify({ additionalContext: hookLine(stats, lang) }));
+      const stats = computeStats(await readRecords(file), window);
+      if (stats) console.log(JSON.stringify({ additionalContext: hookLine(stats, lang, settings.lineStyle) }));
     } catch {
       /* 静默 */
     }
@@ -337,7 +400,7 @@ async function main() {
     console.error(T.errHint);
     process.exit(1);
   }
-  const stats = computeStats(await readRecords(file), args.window);
+  const stats = computeStats(await readRecords(file), window);
   if (!stats) {
     console.error(T.errNoUsage(file));
     process.exit(1);

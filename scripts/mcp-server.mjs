@@ -11,10 +11,12 @@ import {
   formatReport,
   formatSessionList,
   listSessions,
+  loadSettings,
 } from "./token-stats.mjs";
 
 const LANG = detectLang();
-const SERVER_INFO = { name: "token-rate", version: "0.1.0" };
+const SETTINGS = loadSettings();
+const SERVER_INFO = { name: "token-rate", version: "0.3.0" };
 
 const TOOL_DESC = {
   zh: "实时统计 ZCode 会话的 token 用量与速率：生成速率（tok/s，纯模型输出）、吞吐（墙钟）、累计输入/输出、缓存命中率、思考 token、会话时长。数据来自本机 ~/.zcode/cli/rollout 的会话记录，随会话进行实时更新。",
@@ -29,12 +31,12 @@ const ERR_TEXT = {
 const PARAM_DESC = {
   zh: {
     session: "会话 ID（可先用 list=true 查看）。默认：环境变量中的当前会话，否则最新的会话。",
-    window: "吞吐统计的时间窗口（分钟），默认 10。",
+    window: `吞吐统计的时间窗口（分钟），默认取插件设置（当前 ${SETTINGS.windowMinutes}）。`,
     list: "为 true 时不做统计，列出本机可用的历史会话。",
   },
   en: {
     session: "Session id (run list=true first to see them). Default: the current session from the environment, else the newest.",
-    window: "Throughput window in minutes, default 10.",
+    window: `Throughput window in minutes, defaults to the plugin setting (currently ${SETTINGS.windowMinutes}).`,
     list: "When true, skip stats and list available sessions.",
   },
 };
@@ -75,7 +77,7 @@ async function callTokenRate(args = {}) {
   if (!file) {
     throw new Error(E.notFound(args.session));
   }
-  const stats = computeStats(await readRecords(file), args.windowMinutes ?? 10);
+  const stats = computeStats(await readRecords(file), args.windowMinutes ?? SETTINGS.windowMinutes);
   if (!stats) throw new Error(E.noUsage(file));
   return formatReport(stats, file, LANG);
 }

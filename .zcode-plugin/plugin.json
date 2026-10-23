@@ -1,13 +1,38 @@
 {
   "name": "token-rate",
-  "version": "0.2.5",
-  "description": "Real-time token rate & usage stats for ZCode sessions (MCP tool + /token-rate command + per-turn hook line); output language auto-follows the environment (zh/en). ZCode 会话 token 速率与用量实时统计，输出语言自动跟随（中/英）。",
+  "version": "0.3.1",
+  "description": "Real-time token rate & usage stats for ZCode sessions (MCP tool + /token-rate command + per-turn hook line); output language auto-follows the environment (zh/en), style/window/language configurable in plugin settings. ZCode 会话 token 速率与用量实时统计，输出语言自动跟随（中/英），样式/窗口/语言可在插件设置中配置。",
   "author": {
     "name": "zcode-plugins"
   },
   "homepage": "https://github.com/zcode-plugins/token-rate",
   "license": "MIT",
   "commands": "./commands",
-  "hooks": "./hooks/hooks.json",
-  "mcpServers": "./.mcp.json"
+  "mcpServers": "./.mcp.json",
+  "userConfig": {
+    "inject_line": {
+      "type": "boolean",
+      "default": true,
+      "title": "每轮注入速率行 / Inject per-turn rate line",
+      "description": "关闭后 hook 不再向会话注入 [token-rate] 行（MCP 工具与 /token-rate 命令不受影响）。/ When off, the hook stops injecting the [token-rate] line (MCP tool and /token-rate command are unaffected)."
+    },
+    "line_style": {
+      "type": "string",
+      "default": "compact",
+      "title": "速率行样式 / Rate line style",
+      "description": "compact = 极简一行（默认）；detailed = 完整统计。/ compact = minimal one-liner (default); detailed = full stats."
+    },
+    "window_minutes": {
+      "type": "number",
+      "default": 10,
+      "title": "吞吐窗口（分钟）/ Throughput window (minutes)",
+      "description": "吞吐统计的滑动窗口大小，默认 10。/ Sliding window size for throughput stats, default 10."
+    },
+    "language": {
+      "type": "string",
+      "default": "auto",
+      "title": "输出语言 / Output language",
+      "description": "zh / en / auto（跟随环境，默认）。/ zh / en / auto (follow the environment, default)."
+    }
+  }
 }

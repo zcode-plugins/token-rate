@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-10-23
+
+### Fixed
+
+- Removed the explicit `hooks` declaration from the manifest: the loader already auto-registers the conventional `hooks/hooks.json`, so declaring it registered the same file twice and surfaced the warning "Duplicate plugin hooks file ignored: ./hooks/hooks.json" on the plugin settings page. Hook behavior is unchanged (same file, registered once).
+
+## [0.3.0] - 2026-10-23
+
+### Added
+
+- Plugin settings via `userConfig` (editable in **Settings → Plugin Management → Installed → plugin details → Advanced**): `inject_line` (toggle the per-turn line), `line_style` (`compact`/`detailed`), `window_minutes` (throughput window), `language` (`zh`/`en`/`auto`). Values persist under `plugins.options` in `~/.zcode/cli/config.json`.
+
+### Changed
+
+- **Breaking (default)**: the per-turn rate line now defaults to a minimal one-liner (`[token-rate] ⚡24.7 tok/s · 入 1.30M / 出 7.8k`); the previous full line is available as `line_style: detailed`.
+- All runtimes (hook, MCP tool, CLI) read the same settings: `TOKEN_RATE_*` env vars > plugin settings > `userConfig` defaults; invalid values fall back to `compact`.
+- Language detection adds the plugin `language` setting between the `TOKEN_RATE_LANG` env var and the config-file locale.
+
 ## [0.2.5] - 2026-10-23
 
 ### Added
