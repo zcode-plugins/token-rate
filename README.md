@@ -1,52 +1,81 @@
-# Token Pulse (token-rate)
+# Token Pulse
 
-在 ZCode 会话中实时展示 token 速率与用量。数据源为本机 `~/.zcode/cli/rollout/model-io-session_<sessionId>.jsonl`（每次模型调用的 usage 与耗时记录），随会话进行实时更新。
+English | [简体中文](README.zh-CN.md)
 
-> 说明：ZCode 客户端目前没有应用内状态栏扩展点（无 statusLine 配置、无 VS Code 扩展宿主、插件 UI 字段”记录但不执行”），因此本插件只提供会话内入口，不含界面常驻元素。
+Real-time token rate & usage monitor for [ZCode](https://zhipu-ai.github.io/ZCode/) coding sessions.
 
-## 安装 / Install
+[![CI](https://github.com/zcode-plugins/token-rate/actions/workflows/ci.yml/badge.svg)](https://github.com/zcode-plugins/token-rate/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![ZCode Plugin](https://img.shields.io/badge/ZCode-plugin-7c3aed)](.zcode-plugin/plugin.json)
+[![Version](https://img.shields.io/badge/version-0.2.5-green)](CHANGELOG.md)
 
-- **GitHub**（`zcode-plugins/token-rate`）：插件市场 → 添加 → 添加插件市场，粘贴仓库地址 `https://github.com/zcode-plugins/token-rate`。仓库根目录含 `marketplace.json`（插件 `source: “./”`），可整仓作为市场源；该安装路径以 ZCode 实际支持为准。
-- **本地开发**：`<workspace>/plugins/marketplace.json`（市场名 `dev-ods-72371c6c`）指向本目录。
+Token Pulse reads ZCode's local session records (`~/.zcode/cli/rollout/model-io-session_*.jsonl`), which log the token usage and wall time of every model call, and turns them into live metrics:
 
-## 三个使用入口
+- **Generation rate** — output tokens ÷ model call duration, excluding tool-execution gaps. This is "how fast the model is writing right now".
+- **Throughput** — tokens per second over a sliding wall-clock window (default 10 min), including tool gaps.
+- **Cumulative usage** — input (with cache-hit ratio and fresh tokens), output (with reasoning tokens), totals, call count and session duration.
 
-1. **MCP 工具 `token_rate`**（agent 可随时调用）
-   - 无参数：统计当前/最新会话
-   - `list: true`：列出本机历史会话
-   - `session: “<id>”` / `windowMinutes: 30`：指定会话与吞吐窗口
-2. **斜杠命令 `/token-rate`**：让 agent 调用上面的工具并按固定版式汇报（支持参数，如 `/token-rate list`）
-3. **UserPromptSubmit hook**：每次用户发送消息时静默统计，把一行速率摘要注入会话上下文（agent 被问”现在多快”时可直接回答）；任何失败都静默跳过，绝不阻塞会话
+## Features
 
-## 指标口径
+- **Reply-tail rate line** — a `UserPromptSubmit` hook injects fresh stats with every message, and the agent appends a one-line summary at the end of each reply. You see the current rate without asking.
+- **`token_rate` MCP tool** — on-demand full report for the current or any historical session; `list: true` enumerates sessions.
+- **`/token-rate` slash command** — one-keystroke report with a consistent layout.
+- **Bilingual output** — all user-visible output follows one 3-tier language detection: `TOKEN_RATE_LANG` env → `locale`/`language` key in `~/.zcode/cli/config.json` → system locale (`zh*` → Chinese, else English).
+- **Fail-safe by design** — the hook never blocks the session: any error is swallowed silently and the turn proceeds.
 
-- **生成速率（tok/s）**：`Σ输出token / Σ模型调用耗时`，不含工具执行间隙；”峰值”仅统计耗时 ≥2s 的调用
-- **吞吐（tok/s）**：窗口内（默认 10 分钟）墙钟速率，含工具间隙
-- **输入缓存命中率**：`cacheReadTokens / inputTokens`（inputTokens 含缓存读）
-- **输出含思考 token**（reasoningTokens 计入 outputTokens）
+> Note: ZCode currently has no in-app status-bar extension point (no `statusLine` setting, no extension host, plugin UI fields are recorded but not executed). That is why Token Pulse ships conversation-level entries only — there is deliberately no on-screen persistent overlay.
 
-## 本地调试
+## Requirements
+
+- ZCode desktop client
+- Node.js ≥ 18 on `PATH` (used by the MCP server and the hook)
+
+## Installation
+
+**From this repository (GitHub marketplace source)** — the repo root contains a `marketplace.json`, so it can be added directly as a plugin marketplace:
+
+1. Open **Plugin Marketplace → Add → Add Plugin Marketplace**.
+2. Paste `https://github.com/zcode-plugins/token-rate`.
+3. Find **Token Pulse** under **Personal** and click **Install**.
+
+**Local development** — clone the repo, then add its parent directory (which contains the dev `marketplace.json`) as a marketplace, and install/update from there.
+
+## Usage
+
+| Entry | What you get |
+| --- | --- |
+| Send any message | A rate line appears at the end of each reply: `[token-rate] ⚡gen 64.4 tok/s (avg 49.2) · …` |
+| `/token-rate` | Full report: generation rate / throughput / totals / session info |
+| `/token-rate list` | Enumerate historical sessions |
+| `/token-rate <session-id>` | Report for a specific session |
+
+Or simply ask "how fast right now?" — the injected stats let the agent answer directly.
+
+## Metrics reference
+
+| Metric | Definition |
+| --- | --- |
+| Generation rate (tok/s) | `Σ output tokens ÷ Σ model-call durations`. "Recent" = last 5 calls; "peak" considers calls ≥ 2 s |
+| Throughput (tok/s) | Tokens per wall-clock second inside the window (default 10 min), tool gaps included |
+| Cache hit | `cacheReadTokens ÷ inputTokens` (`inputTokens` includes cache reads) |
+| Output | `outputTokens`, which already includes `reasoningTokens` |
+
+## Data source & privacy
+
+All metrics are computed from local files under `~/.zcode/cli/rollout`. The plugin makes **no network requests** and sends data nowhere. The MCP server runs locally via stdio; the hook script runs with an 8 s timeout and exits silently on any failure.
+
+## Development
 
 ```bash
-node scripts/token-stats.mjs            # 当前/最新会话报告
-node scripts/token-stats.mjs --json     # JSON 输出
-node scripts/token-stats.mjs --list     # 历史会话
-node scripts/token-stats.mjs --hook     # hook 模式（输出 {“additionalContext”:...}）
-CLAUDE_SESSION_ID=session_xxx node scripts/token-stats.mjs
-powershell -File scripts/token-bar.ps1 -TestOnce   # 悬浮条统计逻辑单测
+git clone https://github.com/zcode-plugins/token-rate
+cd token-rate
+node scripts/smoke-test.mjs   # 9 checks: syntax, MCP handshake, isolated hook/CLI behavior
 ```
 
-依赖：Node.js（MCP 服务器与 hook 通过 `node` 启动）。
+CI runs the same smoke matrix (Node 20 / 22) on every push and pull request.
 
-## 输出语言 / Output language
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout, versioning and release conventions.
 
-全部用户可见输出（hook 行、报告、会话列表、错误信息、MCP 工具与参数描述）统一按三级探测选择语言：
+## License
 
-1. 环境变量 `TOKEN_RATE_LANG`（`zh` / `en`，手动覆盖）
-2. `~/.zcode/cli/config.json` 的 `locale` / `language` 键（当前版本 ZCode 未写入；出现后自动优先）
-3. 系统 locale（`zh*` → 中文，否则英文）
-
-静态文本保持双语一致：`/token-rate` 命令描述与正文、AGENTS.md 规则、清单描述均为中英并列，不随运行时切换。
-
-All user-visible output (hook line, report, session list, errors, MCP tool & parameter descriptions) picks one language via: `TOKEN_RATE_LANG` env → `locale`/`language` key in `~/.zcode/cli/config.json` → system locale (`zh*` → Chinese, else English). Static texts (command description/body, AGENTS.md rule, manifest description) are bilingual by design.
-
+[MIT](LICENSE) © zcode-plugins
