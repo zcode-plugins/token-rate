@@ -7,9 +7,9 @@ Real-time token rate & usage monitor for [ZCode](https://zhipu-ai.github.io/ZCod
 [![CI](https://github.com/zcode-plugins/token-rate/actions/workflows/ci.yml/badge.svg)](https://github.com/zcode-plugins/token-rate/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![ZCode Plugin](https://img.shields.io/badge/ZCode-plugin-7c3aed)](.zcode-plugin/plugin.json)
-[![Version](https://img.shields.io/badge/version-0.3.3-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.6-green)](CHANGELOG.md)
 
-Token Pulse reads ZCode's local session records (`~/.zcode/cli/rollout/model-io-session_*.jsonl`), which log the token usage and wall time of every model call, and turns them into live metrics:
+Token Pulse reads ZCode's local usage records — preferably the SQLite usage database (`~/.zcode/cli/db/db.sqlite`, `model_usage` table), falling back to `~/.zcode/cli/rollout/model-io-session_*.jsonl` — which log the token usage and wall time of every model call, and turns them into live metrics:
 
 - **Generation rate** — output tokens ÷ model call duration, excluding tool-execution gaps. This is "how fast the model is writing right now".
 - **Throughput** — tokens per second over a sliding wall-clock window (default 10 min), including tool gaps.
@@ -29,7 +29,7 @@ Token Pulse reads ZCode's local session records (`~/.zcode/cli/rollout/model-io-
 ## Requirements
 
 - ZCode desktop client
-- Node.js ≥ 18 on `PATH` (used by the MCP server and the hook)
+- Node.js ≥ 18 on `PATH` (used by the MCP server and the hook). The SQLite source additionally requires `node:sqlite` (Node 22.13+ / 23.4+); older runtimes automatically fall back to the rollout JSONL.
 
 ## Installation
 
@@ -61,13 +61,13 @@ Open **Settings → Plugin Management → Installed → Token Pulse → details 
 | `inject_line` | switch | on | Inject the per-turn rate line; turning it off does not affect the MCP tool or the `/token-rate` command |
 | `detailed_line` | switch | off | On = full stats (rate/throughput/totals/duration); off = minimal one-liner |
 | `window_minutes` | number | `10` | Sliding window for throughput stats (minutes); also the MCP tool's default window |
-| `language` | text | `auto` | `auto` = follow the ZCode UI language; `zh` / `en` = force Chinese / English |
+| `language` | text | `auto` | Accepted values: `auto` (follow the ZCode UI language) / `zh` (force Chinese) / `en` (force English) |
 
 ZCode's plugin settings form has no dropdown control — the manifest schema only accepts `string`, `number`, `boolean`, `directory` and `file`, rendered as text/number inputs and switches. Two-state options are therefore exposed as switches; the three-state `language` option has to remain a text field. The legacy `line_style` key (`compact`/`detailed`) is still honored if it was saved by an earlier version.
 
 Option titles and descriptions come straight from `userConfig`, which has no i18n fields, so they are written in Chinese only; the plugin store name and description still follow the UI language through `marketplace.json`.
 
-Advanced: the env vars `TOKEN_RATE_INJECT`, `TOKEN_RATE_STYLE`, `TOKEN_RATE_WINDOW` and `TOKEN_RATE_LANG` temporarily override the settings above (highest priority).
+Advanced: the env vars `TOKEN_RATE_INJECT`, `TOKEN_RATE_STYLE`, `TOKEN_RATE_WINDOW`, `TOKEN_RATE_LANG` and `TOKEN_RATE_SOURCE` (`db` / `jsonl` / `auto`) temporarily override the settings above (highest priority).
 
 ## Metrics reference
 
@@ -80,14 +80,14 @@ Advanced: the env vars `TOKEN_RATE_INJECT`, `TOKEN_RATE_STYLE`, `TOKEN_RATE_WIND
 
 ## Data source & privacy
 
-All metrics are computed from local files under `~/.zcode/cli/rollout`. The plugin makes **no network requests** and sends data nowhere. The MCP server runs locally via stdio; the hook script runs with an 8 s timeout and exits silently on any failure.
+All metrics are computed from local ZCode records: the SQLite usage database (`~/.zcode/cli/db/db.sqlite`, opened read-only) when available, otherwise files under `~/.zcode/cli/rollout`. The plugin makes **no network requests** and sends data nowhere. The MCP server runs locally via stdio; the hook script runs with an 8 s timeout and exits silently on any failure.
 
 ## Development
 
 ```bash
 git clone https://github.com/zcode-plugins/token-rate
 cd token-rate
-node scripts/smoke-test.mjs   # 22 checks: syntax, MCP handshake, isolated hook/CLI behavior, settings loading, language detection and line styles
+node scripts/smoke-test.mjs   # syntax, MCP handshake, isolated hook/CLI behavior, settings loading, language detection, line styles, DB source + JSONL fallback
 ```
 
 CI runs the same smoke matrix (Node 20 / 22) on every push and pull request.

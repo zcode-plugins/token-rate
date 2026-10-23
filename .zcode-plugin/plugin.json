@@ -1,7 +1,7 @@
 {
   "name": "token-rate",
-  "version": "0.3.4",
-  "description": "Real-time token rate & usage stats for ZCode sessions (MCP tool + /token-rate command + per-turn hook line); output language follows the ZCode UI language, detailed line/window configurable in plugin settings.",
+  "version": "0.3.6",
+  "description": "Real-time token rate & usage stats for ZCode sessions (SQLite usage DB with rollout fallback; MCP tool + /token-rate command + per-turn hook line); output language follows the ZCode UI language, detailed line/window configurable in plugin settings.",
   "author": {
     "name": "zcode-plugins"
   },
@@ -31,8 +31,8 @@
     "language": {
       "type": "string",
       "default": "auto",
-      "title": "输出语言",
-      "description": "auto = 跟随 ZCode 界面语言（默认）；zh / en = 强制中文 / 英文。"
+      "title": "输出语言（auto / zh / en）",
+      "description": "可选值：auto（跟随 ZCode 界面语言，默认）、zh（强制中文）、en（强制英文）。"
     }
   }
 }

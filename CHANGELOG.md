@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-10-23
+
+### Changed
+
+- Prefer ZCode's SQLite usage database (`~/.zcode/cli/db/db.sqlite`, `model_usage` table) as the stats source. It is written during normal session accounting — the hidden developer-tools panel does not need to be enabled — is indexed by session/turn, and avoids parsing multi-megabyte rollout JSONL files. The rollout file remains as an automatic fallback for older ZCode builds or Node runtimes without `node:sqlite`.
+- Hook mode now reads `session_id` from the hook's stdin JSON. Previously it fell back to the newest rollout file, so the first turn of a new session could display the previous session's totals.
+- `--list` now lists sessions from the SQLite database (title and call count included) and falls back to rollout files when the DB is unavailable.
+- Added `--source db|jsonl|auto` and `TOKEN_RATE_SOURCE` to force a data source; the default is `auto` (DB first).
+- MCP reports label the source as `db.sqlite (model_usage)` or the rollout file name.
+
+### Fixed
+
+- An explicit session id with no records no longer falls back to the newest session, preventing another session's stats from being shown.
+
+## [0.3.5] - 2026-10-23
+
+### Changed
+
+- The `language` setting now lists its accepted values in the visible label: `输出语言（auto / zh / en）`. ZCode's settings form does not render `userConfig.description`, so the values have to be part of the title. The description was expanded to spell out each value.
+
 ## [0.3.4] - 2026-10-23
 
 ### Changed

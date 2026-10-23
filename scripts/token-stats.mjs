@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // token-rate 核心统计模块 + CLI。
-// 数据源：~/.zcode/cli/rollout/model-io-session_<sessionId>.jsonl
-// 每行一条 model_io 记录：{ startedAt, completedAt, durationMs, model: {modelId}, usage: {...} }
-// usage 可能在记录顶层，也可能在 response.usage（不同版本兼容）。
+// 数据源（按优先级）：
+//   1. ~/.zcode/cli/db/db.sqlite 的 model_usage 表：ZCode 运行时的正常记账数据，
+//      每次模型请求一行，含 first_token_at / time_to_first_token_ms；不需要开发者工具面板。
+//   2. ~/.zcode/cli/rollout/model-io-session_<sessionId>.jsonl：旧版 ZCode 或当前 Node
+//      不支持 node:sqlite 时的回退。每行一条 model_io 记录。
+// 可用 TOKEN_RATE_SOURCE=db|jsonl|auto（或 --source）强制指定，默认 auto（DB 优先）。
 // 被 CLI（默认/--json/--list）、hook（--hook，输出严格 JSON additionalContext）、
 // 以及 scripts/mcp-server.mjs（MCP 工具 token_rate）共用。
 // 插件设置（plugin.json userConfig）：用户在客户端“插件详情 → Advanced”里填写，
@@ -12,11 +15,40 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
+const require = createRequire(import.meta.url);
 const ROLLOUT_DIR = path.join(os.homedir(), '.zcode', 'cli', 'rollout');
+const DB_PATH = path.join(path.dirname(ROLLOUT_DIR), 'db', 'db.sqlite');
 const RECENT_CALLS = 5; // “最近速率”取最近 N 次模型调用
+const SOURCE_AUTO = 'auto';
+const SOURCE_DB = 'db';
+const SOURCE_JSONL = 'jsonl';
+
+// node:sqlite 是 Node 22.5+ 的实验特性（22.13+/23.4+ 默认可用）。老版本 Node 上
+// require 会抛错，此时 loadSqlite() 返回 null，所有 DB 读取自动回退到 rollout JSONL。
+let sqliteModule; // undefined=未探测，null=不可用
+function loadSqlite() {
+  if (sqliteModule !== undefined) return sqliteModule;
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    sqliteModule = { DatabaseSync };
+  } catch {
+    sqliteModule = null;
+  }
+  return sqliteModule;
+}
+
+// hook 的 stdin JSON 里有 session_id；优先使用它，避免新会话首轮误读上一个会话。
+let runtimeSessionId = null;
+export function setRuntimeSessionId(id) {
+  runtimeSessionId = id ? String(id).trim() : null;
+}
+function currentSessionId() {
+  return runtimeSessionId || process.env.CLAUDE_SESSION_ID || process.env.ZCODE_SESSION_ID || null;
+}
 
 let cachedConfig; // undefined=未读，null=读取失败
 function readZcodeConfig() {
@@ -129,7 +161,7 @@ export function resolveRolloutFile(session) {
     if (fs.existsSync(s) && fs.statSync(s).isFile()) return s;
     return fs.existsSync(sessionCandidate(s)) ? sessionCandidate(s) : null;
   }
-  const env = process.env.CLAUDE_SESSION_ID || process.env.ZCODE_SESSION_ID;
+  const env = currentSessionId();
   if (env && fs.existsSync(sessionCandidate(env))) return sessionCandidate(env);
   return newestRolloutFile();
 }
@@ -165,6 +197,155 @@ export async function readRecords(file) {
     });
   }
   return records;
+}
+
+// ---------- SQLite 数据源（model_usage） ----------
+
+function dbSessionId(id) {
+  const s = String(id || '').trim();
+  if (/^(session_|sess_)/i.test(s)) return s;
+  return `session_${normalizeSessionId(s)}`;
+}
+
+function openDb() {
+  const sqlite = loadSqlite();
+  if (!sqlite || !fs.existsSync(DB_PATH)) return null;
+  try {
+    const db = new sqlite.DatabaseSync(DB_PATH, { readOnly: true });
+    db.exec('PRAGMA busy_timeout = 2000');
+    return db;
+  } catch {
+    return null;
+  }
+}
+
+// 读取某个会话的全部模型调用。字段名做兼容探测：旧/新版本 schema 缺列时回退默认值。
+function readDbRecords(sessionId) {
+  const db = openDb();
+  if (!db) return null;
+  try {
+    const cols = new Set(db.prepare('PRAGMA table_info(model_usage)').all().map((c) => c.name));
+    if (!['session_id', 'started_at', 'input_tokens', 'output_tokens'].every((c) => cols.has(c))) return null;
+    const col = (name, fallback) => (cols.has(name) ? name : `${fallback} AS ${name}`);
+    const rows = db
+      .prepare(
+        `SELECT started_at,
+                ${col('completed_at', 'NULL')},
+                ${col('duration_ms', 'NULL')},
+                ${col('model_id', "'unknown'")},
+                ${col('input_tokens', '0')},
+                ${col('output_tokens', '0')},
+                ${col('reasoning_tokens', '0')},
+                ${col('cache_read_input_tokens', '0')},
+                ${col('computed_total_tokens', 'NULL')},
+                ${col('first_token_at', 'NULL')},
+                ${col('time_to_first_token_ms', 'NULL')},
+                ${col('status', "'completed'")}
+           FROM model_usage
+          WHERE session_id = ?
+          ORDER BY started_at ASC`,
+      )
+      .all(sessionId);
+    const records = [];
+    for (const r of rows) {
+      if (!Number.isFinite(r.started_at)) continue;
+      const inTok = Number.isFinite(r.input_tokens) ? r.input_tokens : 0;
+      const outTok = Number.isFinite(r.output_tokens) ? r.output_tokens : 0;
+      // 取消/失败的请求通常是 0 用量；保留有部分用量的行，避免丢掉真实消耗。
+      if (r.status && r.status !== 'completed' && inTok === 0 && outTok === 0) continue;
+      const t0 = r.started_at;
+      const dur = Number.isFinite(r.duration_ms) ? r.duration_ms : Math.max((r.completed_at || t0) - t0, 0);
+      const t1 = Number.isFinite(r.completed_at) ? r.completed_at : t0 + dur;
+      records.push({
+        t0,
+        t1,
+        dur,
+        model: r.model_id || 'unknown',
+        in: inTok,
+        cache: Number.isFinite(r.cache_read_input_tokens) ? r.cache_read_input_tokens : 0,
+        out: outTok,
+        reasoning: Number.isFinite(r.reasoning_tokens) ? r.reasoning_tokens : 0,
+        total: Number.isFinite(r.computed_total_tokens) ? r.computed_total_tokens : inTok + outTok,
+        firstTokenAt: Number.isFinite(r.first_token_at) ? r.first_token_at : null,
+        ttftMs: Number.isFinite(r.time_to_first_token_ms) ? r.time_to_first_token_ms : null,
+      });
+    }
+    return records;
+  } catch {
+    return null;
+  } finally {
+    try { db.close(); } catch { /* ignore */ }
+  }
+}
+
+function newestDbSession() {
+  const db = openDb();
+  if (!db) return null;
+  try {
+    const row = db
+      .prepare('SELECT session_id FROM model_usage GROUP BY session_id ORDER BY MAX(completed_at) DESC LIMIT 1')
+      .get();
+    return row?.session_id ?? null;
+  } catch {
+    return null;
+  } finally {
+    try { db.close(); } catch { /* ignore */ }
+  }
+}
+
+function normalizeSource(value) {
+  const s = String(value || '').trim().toLowerCase();
+  return s === SOURCE_DB || s === SOURCE_JSONL ? s : SOURCE_AUTO;
+}
+
+// 统一的会话数据加载：DB 优先，rollout JSONL 回退。
+// 指定了 session 但两边都没有记录时返回 null，绝不回退到“最新会话”，避免显示别人的数据。
+export async function loadRecords(session, options = {}) {
+  const requested = session ? String(session).trim() : '';
+  const source = normalizeSource(options.source ?? process.env.TOKEN_RATE_SOURCE);
+
+  if (requested && fs.existsSync(requested) && fs.statSync(requested).isFile()) {
+    return { records: await readRecords(requested), file: requested, source: SOURCE_JSONL };
+  }
+
+  const explicitId = requested || currentSessionId();
+  if (explicitId) {
+    if (source !== SOURCE_JSONL) {
+      const records = readDbRecords(dbSessionId(explicitId));
+      if (records && records.length) return { records, file: DB_PATH, source: SOURCE_DB };
+      if (source === SOURCE_DB) return null;
+    }
+    if (source !== SOURCE_DB) {
+      const file = resolveRolloutFile(explicitId);
+      if (file) return { records: await readRecords(file), file, source: SOURCE_JSONL };
+    }
+    return null;
+  }
+
+  if (source !== SOURCE_JSONL) {
+    const newest = newestDbSession();
+    if (newest) {
+      const records = readDbRecords(newest);
+      if (records && records.length) return { records, file: DB_PATH, source: SOURCE_DB };
+    }
+    if (source === SOURCE_DB) return null;
+  }
+  const file = newestRolloutFile();
+  if (file) return { records: await readRecords(file), file, source: SOURCE_JSONL };
+  return null;
+}
+
+// hook 的 stdin JSON：{ session_id, hook_event_name, cwd, ... }
+function readHookInput() {
+  try {
+    if (process.stdin.isTTY) return null;
+    const raw = fs.readFileSync(0, 'utf8');
+    if (!raw.trim()) return null;
+    const input = JSON.parse(raw);
+    return input && typeof input === 'object' ? input : null;
+  } catch {
+    return null;
+  }
 }
 
 export function computeStats(records, windowMinutes = 10) {
@@ -227,7 +408,7 @@ export function computeStats(records, windowMinutes = 10) {
   };
 }
 
-export function listSessions() {
+function listRolloutSessions() {
   if (!fs.existsSync(ROLLOUT_DIR)) return [];
   return fs
     .readdirSync(ROLLOUT_DIR)
@@ -237,6 +418,49 @@ export function listSessions() {
       return { id: f.replace(/^model-io-session_/, '').replace(/\.jsonl$/, ''), mtimeMs: st.mtimeMs, sizeBytes: st.size };
     })
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+function listDbSessions() {
+  const db = openDb();
+  if (!db) return null;
+  try {
+    const rows = db
+      .prepare(
+        `SELECT s.id,
+                s.title,
+                s.time_updated,
+                COUNT(m.id) AS calls,
+                MAX(m.completed_at) AS last_used
+           FROM session s
+           LEFT JOIN model_usage m ON m.session_id = s.id
+          WHERE s.time_deleted IS NULL
+            AND s.parent_id IS NULL
+          GROUP BY s.id
+         HAVING COUNT(m.id) > 0
+          ORDER BY COALESCE(MAX(m.completed_at), s.time_updated) DESC
+          LIMIT 50`,
+      )
+      .all();
+    if (!rows.length) return null;
+    return rows.map((r) => ({
+      id: r.id,
+      mtimeMs: r.last_used || r.time_updated || 0,
+      sizeBytes: 0,
+      title: String(r.title || '').replace(/\s+/g, ' ').trim(),
+      calls: r.calls,
+    }));
+  } catch {
+    return null;
+  } finally {
+    try { db.close(); } catch { /* ignore */ }
+  }
+}
+
+// 历史会话：DB 优先；DB 不可用/为空时回退 rollout 文件列表。
+export function listSessions() {
+  const dbSessions = listDbSessions();
+  if (dbSessions) return { source: SOURCE_DB, dir: DB_PATH, sessions: dbSessions };
+  return { source: SOURCE_JSONL, dir: ROLLOUT_DIR, sessions: listRolloutSessions() };
 }
 
 // ---------- 格式化（中英双语） ----------
@@ -275,11 +499,12 @@ const L = {
     srcLine: (f) => `📄 数据源 ${f}`,
     listHead: (d) => `历史会话（${d}）：`,
     listNone: '  （无）',
-    listRow: (id, t, s) => `  ${id}  ${t}  ${s}MB`,
-    errNoSession: (s) => `找不到会话记录：${s ?? '（rollout 目录无记录）'}`,
+    listRow: (id, t, s) => `  ${id}  ${t}  ${s}`,
+    listCalls: (n) => `${n} 次`,
+    errNoSession: (s) => `找不到会话记录：${s ?? '（本地无记录）'}`,
     errDir: (d) => `查找目录：${d}`,
     errHint: '用 --list 查看可用会话。',
-    errNoUsage: (f) => `会话文件没有可用的 usage 记录：${f}`,
+    errNoUsage: (f) => `会话没有可用的 usage 记录：${f}`,
     // hook 行
     hCompact: (r, i, o) => `⚡${r} tok/s · 入 ${i} / 出 ${o}`,
     hGen: (r, a) => `⚡生成 ${r} tok/s（均值 ${a}）`,
@@ -302,11 +527,12 @@ const L = {
     srcLine: (f) => `📄 Source ${f}`,
     listHead: (d) => `Sessions (${d}):`,
     listNone: '  (none)',
-    listRow: (id, t, s) => `  ${id}  ${t}  ${s}MB`,
-    errNoSession: (s) => `Session record not found: ${s ?? '(no records in rollout dir)'}`,
+    listRow: (id, t, s) => `  ${id}  ${t}  ${s}`,
+    listCalls: (n) => `${n} call${n === 1 ? '' : 's'}`,
+    errNoSession: (s) => `Session record not found: ${s ?? '(no local records)'}`,
     errDir: (d) => `Search dir: ${d}`,
     errHint: 'Use --list to see available sessions.',
-    errNoUsage: (f) => `No usable usage records in session file: ${f}`,
+    errNoUsage: (f) => `No usable usage records in session: ${f}`,
     hCompact: (r, i, o) => `⚡${r} tok/s · in ${i} / out ${o}`,
     hGen: (r, a) => `⚡gen ${r} tok/s (avg ${a})`,
     hThr: (w, o) => ` · ${w}-min throughput out ${o}/s`,
@@ -316,7 +542,7 @@ const L = {
   },
 };
 
-export function formatReport(stats, file, lang = detectLang()) {
+export function formatReport(stats, file, lang = detectLang(), source = SOURCE_JSONL) {
   const t = L[lang] ?? L.zh;
   const u = stats.totals;
   const lines = [];
@@ -331,7 +557,15 @@ export function formatReport(stats, file, lang = detectLang()) {
   lines.push(t.outLine(fmtInt(u.output), fmtInt(u.reasoning)));
   lines.push(t.totalLine(fmtInt(u.total)));
   lines.push(t.spanLine(fmtDur(stats.spanMs), stats.firstAt, stats.lastAt));
-  if (file) lines.push(t.srcLine(path.basename(file)));
+  if (file) {
+    const src =
+      source === SOURCE_DB
+        ? lang === 'en'
+          ? 'db.sqlite (model_usage)'
+          : 'db.sqlite（model_usage）'
+        : path.basename(file);
+    lines.push(t.srcLine(src));
+  }
   return lines.join('\n');
 }
 
@@ -354,11 +588,16 @@ export function hookLine(stats, lang = detectLang(), style = 'compact') {
   return data + '\n' + t.hInstruction;
 }
 
-export function formatSessionList(sessions, lang = detectLang()) {
+export function formatSessionList(list, lang = detectLang()) {
   const t = L[lang] ?? L.zh;
-  const lines = [t.listHead(ROLLOUT_DIR)];
+  const { source, dir, sessions } = list;
+  const lines = [t.listHead(dir)];
   for (const s of sessions) {
-    lines.push(t.listRow(s.id, new Date(s.mtimeMs).toISOString(), (s.sizeBytes / 1048576).toFixed(1)));
+    const extra =
+      source === SOURCE_DB
+        ? `${t.listCalls(s.calls)}${s.title ? ` · ${s.title}` : ''}`
+        : `${(s.sizeBytes / 1048576).toFixed(1)}MB`;
+    lines.push(t.listRow(s.id, new Date(s.mtimeMs).toISOString(), extra));
   }
   if (!sessions.length) lines.push(t.listNone);
   return lines.join('\n');
@@ -367,7 +606,7 @@ export function formatSessionList(sessions, lang = detectLang()) {
 // ---------- CLI ----------
 
 function parseArgs(argv) {
-  const out = { session: undefined, window: undefined, json: false, hook: false, list: false };
+  const out = { session: undefined, window: undefined, source: undefined, json: false, hook: false, list: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') out.json = true;
@@ -375,6 +614,8 @@ function parseArgs(argv) {
     else if (a === '--list') out.list = true;
     else if (a === '--session') out.session = argv[++i];
     else if (a === '--window') out.window = Number(argv[++i]);
+    else if (a === '--source') out.source = argv[++i];
+    else if (a.startsWith('--source=')) out.source = a.slice('--source='.length);
     else out.session = a;
   }
   return out;
@@ -388,22 +629,24 @@ async function main() {
   const T = L[lang] ?? L.zh;
 
   if (args.list) {
+    const list = listSessions();
     if (args.json) {
-      console.log(JSON.stringify({ rolloutDir: ROLLOUT_DIR, sessions: listSessions() }, null, 2));
+      console.log(JSON.stringify({ source: list.source, dir: list.dir, rolloutDir: ROLLOUT_DIR, sessions: list.sessions }, null, 2));
     } else {
-      console.log(formatSessionList(listSessions(), lang));
+      console.log(formatSessionList(list, lang));
     }
     return;
   }
-
-  const file = resolveRolloutFile(args.session);
 
   // hook 模式：任何失败都静默退出，绝不阻塞会话；stdout 必须是严格 JSON
   if (args.hook) {
     try {
       if (!settings.injectLine) return; // 用户在插件设置里关闭了注入
-      if (!file) return;
-      const stats = computeStats(await readRecords(file), window);
+      const input = readHookInput();
+      if (input?.session_id) setRuntimeSessionId(input.session_id);
+      const loaded = await loadRecords(undefined, { source: args.source });
+      if (!loaded) return;
+      const stats = computeStats(loaded.records, window);
       if (stats) console.log(JSON.stringify({ additionalContext: hookLine(stats, lang, settings.lineStyle) }));
     } catch {
       /* 静默 */
@@ -411,21 +654,23 @@ async function main() {
     return;
   }
 
-  if (!file) {
+  const loaded = await loadRecords(args.session, { source: args.source });
+  if (!loaded) {
     console.error(T.errNoSession(args.session));
+    console.error(T.errDir(DB_PATH));
     console.error(T.errDir(ROLLOUT_DIR));
     console.error(T.errHint);
     process.exit(1);
   }
-  const stats = computeStats(await readRecords(file), window);
+  const stats = computeStats(loaded.records, window);
   if (!stats) {
-    console.error(T.errNoUsage(file));
+    console.error(T.errNoUsage(loaded.file));
     process.exit(1);
   }
   if (args.json) {
-    console.log(JSON.stringify({ file, lang, ...stats }, null, 2));
+    console.log(JSON.stringify({ file: loaded.file, source: loaded.source, lang, ...stats }, null, 2));
   } else {
-    console.log(formatReport(stats, file, lang));
+    console.log(formatReport(stats, loaded.file, lang, loaded.source));
   }
 }
 

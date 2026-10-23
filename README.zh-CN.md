@@ -7,9 +7,9 @@
 [![CI](https://github.com/zcode-plugins/token-rate/actions/workflows/ci.yml/badge.svg)](https://github.com/zcode-plugins/token-rate/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![ZCode Plugin](https://img.shields.io/badge/ZCode-plugin-7c3aed)](.zcode-plugin/plugin.json)
-[![Version](https://img.shields.io/badge/version-0.3.3-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.6-green)](CHANGELOG.md)
 
-Token 脉冲读取 ZCode 的本地会话记录（`~/.zcode/cli/rollout/model-io-session_*.jsonl`，其中记载了每次模型调用的 token 用量与耗时），并将其转化为实时指标：
+Token 脉冲读取 ZCode 的本地用量记录——优先使用 SQLite 用量库（`~/.zcode/cli/db/db.sqlite` 的 `model_usage` 表），不可用时回退到 `~/.zcode/cli/rollout/model-io-session_*.jsonl`——其中记载了每次模型调用的 token 用量与耗时，并将其转化为实时指标：
 
 - **生成速率** —— 输出 token ÷ 模型调用耗时，不含工具执行间隙，即"模型此刻写得多快"。
 - **吞吐** —— 滑动窗口（默认 10 分钟）内按墙钟时间计算的每秒 token 数，含工具间隙。
@@ -29,7 +29,7 @@ Token 脉冲读取 ZCode 的本地会话记录（`~/.zcode/cli/rollout/model-io-
 ## 环境要求
 
 - ZCode 桌面客户端
-- `PATH` 中有 Node.js ≥ 18（MCP 服务器与 hook 通过 `node` 启动）
+- `PATH` 中有 Node.js ≥ 18（MCP 服务器与 hook 通过 `node` 启动）。SQLite 数据源额外要求运行时支持 `node:sqlite`（Node 22.13+ / 23.4+）；更老的版本自动回退到 rollout JSONL。
 
 ## 安装
 
@@ -61,13 +61,13 @@ Token 脉冲读取 ZCode 的本地会话记录（`~/.zcode/cli/rollout/model-io-
 | `inject_line` | 开关 | 开 | 是否每轮注入速率行；关闭后 MCP 工具与 `/token-rate` 命令不受影响 |
 | `detailed_line` | 开关 | 关 | 开 = 完整统计（速率/吞吐/累计/时长）；关 = 极简一行 |
 | `window_minutes` | 数字 | `10` | 吞吐统计的滑动窗口（分钟），同时作为 MCP 工具的默认窗口 |
-| `language` | 文本 | `auto` | `auto` = 跟随 ZCode 界面语言；`zh` / `en` = 强制中文 / 英文 |
+| `language` | 文本 | `auto` | 可选值：`auto`（跟随 ZCode 界面语言）/ `zh`（强制中文）/ `en`（强制英文） |
 
 ZCode 的插件设置表单没有下拉控件——清单 schema 只接受 `string`、`number`、`boolean`、`directory`、`file`，分别渲染为文本/数字输入框和开关。因此两态选项统一做成开关；三态的 `language` 只能保留文本输入。旧版 `line_style` 键（`compact`/`detailed`）若已保存仍会生效。
 
 设置项的标题和说明直接取自 `userConfig`，清单 schema 没有 i18n 字段，因此固定为中文；插件商店中的名称与描述仍通过 `marketplace.json` 的 `*_i18n` 跟随界面语言。
 
-高级用法：环境变量 `TOKEN_RATE_INJECT`、`TOKEN_RATE_STYLE`、`TOKEN_RATE_WINDOW`、`TOKEN_RATE_LANG` 可临时覆盖上述设置（优先级最高）。
+高级用法：环境变量 `TOKEN_RATE_INJECT`、`TOKEN_RATE_STYLE`、`TOKEN_RATE_WINDOW`、`TOKEN_RATE_LANG`、`TOKEN_RATE_SOURCE`（`db` / `jsonl` / `auto`）可临时覆盖上述设置（优先级最高）。
 
 ## 指标口径
 
@@ -80,14 +80,14 @@ ZCode 的插件设置表单没有下拉控件——清单 schema 只接受 `stri
 
 ## 数据来源与隐私
 
-所有指标均来自 `~/.zcode/cli/rollout` 下的本地文件计算。插件**不发起任何网络请求**，数据不出本机；MCP 服务器通过 stdio 本地运行；hook 脚本限时 8 秒，任何失败静默退出。
+所有指标均来自本机 ZCode 记录：优先读取 SQLite 用量库（`~/.zcode/cli/db/db.sqlite`，只读打开），不可用时读取 `~/.zcode/cli/rollout` 下的文件。插件**不发起任何网络请求**，数据不出本机；MCP 服务器通过 stdio 本地运行；hook 脚本限时 8 秒，任何失败静默退出。
 
 ## 开发
 
 ```bash
 git clone https://github.com/zcode-plugins/token-rate
 cd token-rate
-node scripts/smoke-test.mjs   # 22 项检查：语法、MCP 握手、隔离环境下的 hook/CLI 行为、设置加载、语言探测与行样式
+node scripts/smoke-test.mjs   # 语法、MCP 握手、隔离环境下的 hook/CLI 行为、设置加载、语言探测、行样式、DB 数据源与 JSONL 回退
 ```
 
 CI 会在每次 push 与 pull request 上运行同一组冒烟测试（Node 20 / 22 矩阵）。

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // token-rate MCP 服务器（stdio，JSON-RPC 2.0 / MCP 协议）。
-// 暴露工具 token_rate：当前/指定 ZCode 会话的 token 用量与速率统计，
-// 数据实时来自 ~/.zcode/cli/rollout 的 model_io 会话记录。
+// 暴露工具 token_rate：当前/指定 ZCode 会话的 token 用量与速率统计。
+// 数据优先来自 ~/.zcode/cli/db/db.sqlite 的 model_usage 表，
+// 不可用时回退到 ~/.zcode/cli/rollout 的 model_io 会话记录。
 import { createInterface } from "node:readline";
 import {
   detectLang,
-  resolveRolloutFile,
-  readRecords,
+  loadRecords,
   computeStats,
   formatReport,
   formatSessionList,
@@ -16,16 +16,16 @@ import {
 
 const LANG = detectLang();
 const SETTINGS = loadSettings();
-const SERVER_INFO = { name: "token-rate", version: "0.3.3" };
+const SERVER_INFO = { name: "token-rate", version: "0.3.6" };
 
 const TOOL_DESC = {
-  zh: "实时统计 ZCode 会话的 token 用量与速率：生成速率（tok/s，纯模型输出）、吞吐（墙钟）、累计输入/输出、缓存命中率、思考 token、会话时长。数据来自本机 ~/.zcode/cli/rollout 的会话记录，随会话进行实时更新。",
-  en: "Live token usage & rate stats for the current ZCode session: generation rate (tok/s, pure model output), throughput (wall clock), cumulative in/out tokens, cache hit ratio, reasoning tokens, and session duration. Computed from local session records in ~/.zcode/cli/rollout, updated in real time.",
+  zh: "实时统计 ZCode 会话的 token 用量与速率：生成速率（tok/s，纯模型输出）、吞吐（墙钟）、累计输入/输出、缓存命中率、思考 token、会话时长。数据优先来自本机 ZCode 的 usage 数据库（~/.zcode/cli/db/db.sqlite，model_usage），不可用时回退到 ~/.zcode/cli/rollout 的会话记录，随会话进行实时更新。",
+  en: "Live token usage & rate stats for the current ZCode session: generation rate (tok/s, pure model output), throughput (wall clock), cumulative in/out tokens, cache hit ratio, reasoning tokens, and session duration. Prefers the local ZCode usage database (~/.zcode/cli/db/db.sqlite, model_usage) and falls back to session records in ~/.zcode/cli/rollout; updated in real time.",
 };
 
 const ERR_TEXT = {
-  zh: { notFound: (s) => `找不到会话记录${s ? `：${s}` : ""}。可用 list: true 查看历史会话。`, noUsage: (f) => `会话文件没有可用的 usage 记录：${f}`, prefix: "错误：" },
-  en: { notFound: (s) => `Session record not found${s ? `: ${s}` : ""}. Use list: true to see available sessions.`, noUsage: (f) => `No usable usage records in session file: ${f}`, prefix: "Error: " },
+  zh: { notFound: (s) => `找不到会话记录${s ? `：${s}` : ""}。可用 list: true 查看历史会话。`, noUsage: (f) => `会话没有可用的 usage 记录：${f}`, prefix: "错误：" },
+  en: { notFound: (s) => `Session record not found${s ? `: ${s}` : ""}. Use list: true to see available sessions.`, noUsage: (f) => `No usable usage records in session: ${f}`, prefix: "Error: " },
 };
 
 const PARAM_DESC = {
@@ -65,21 +65,25 @@ const TOKEN_RATE_TOOL = {
 };
 
 function listText() {
-  const sessions = listSessions();
-  if (!sessions.length) return LANG === "en" ? "No session records found (~/.zcode/cli/rollout is empty)." : "没有找到会话记录（~/.zcode/cli/rollout 为空）。";
-  return formatSessionList(sessions, LANG);
+  const list = listSessions();
+  if (!list.sessions.length) {
+    return LANG === "en"
+      ? `No session records found (${list.dir}).`
+      : `没有找到会话记录（${list.dir}）。`;
+  }
+  return formatSessionList(list, LANG);
 }
 
 async function callTokenRate(args = {}) {
   const E = ERR_TEXT[LANG] ?? ERR_TEXT.zh;
   if (args.list) return listText();
-  const file = resolveRolloutFile(args.session);
-  if (!file) {
+  const loaded = await loadRecords(args.session);
+  if (!loaded) {
     throw new Error(E.notFound(args.session));
   }
-  const stats = computeStats(await readRecords(file), args.windowMinutes ?? SETTINGS.windowMinutes);
-  if (!stats) throw new Error(E.noUsage(file));
-  return formatReport(stats, file, LANG);
+  const stats = computeStats(loaded.records, args.windowMinutes ?? SETTINGS.windowMinutes);
+  if (!stats) throw new Error(E.noUsage(loaded.file));
+  return formatReport(stats, loaded.file, LANG, loaded.source);
 }
 
 function rpcReply(id, payload) {

@@ -183,5 +183,89 @@ function settingsProbe(env) {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// 5. SQLite 数据源（仅当 Node 支持 node:sqlite）：DB 优先、hook session_id、JSONL 回退
+let DatabaseSync = null;
+try {
+  ({ DatabaseSync } = await import('node:sqlite'));
+} catch {
+  /* Node < 22.5 或未启用 node:sqlite */
+}
+if (!DatabaseSync) {
+  console.log('  skip db tests (node:sqlite unavailable)');
+} else {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'token-rate-smoke-'));
+  const dbDir = path.join(tmp, '.zcode', 'cli', 'db');
+  const rolloutDir = path.join(tmp, '.zcode', 'cli', 'rollout');
+  fs.mkdirSync(dbDir, { recursive: true });
+  const dbPath = path.join(dbDir, 'db.sqlite');
+  const now = Date.now();
+
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_updated INTEGER, time_deleted INTEGER, parent_id TEXT);
+    CREATE TABLE model_usage (
+      id TEXT, session_id TEXT, turn_id TEXT, query_source TEXT, status TEXT,
+      started_at INTEGER, first_token_at INTEGER, completed_at INTEGER,
+      duration_ms INTEGER, time_to_first_token_ms INTEGER,
+      input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+      cache_read_input_tokens INTEGER, computed_total_tokens INTEGER, model_id TEXT
+    );
+    CREATE INDEX model_usage_session_turn_idx ON model_usage(session_id, turn_id);
+  `);
+  const ins = db.prepare(`INSERT INTO model_usage
+    (id, session_id, turn_id, query_source, status, started_at, first_token_at, completed_at,
+     duration_ms, time_to_first_token_ms, input_tokens, output_tokens, reasoning_tokens,
+     cache_read_input_tokens, computed_total_tokens, model_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  ins.run('m1', 'session_db', 'turn_1', 'main_turn', 'completed', now - 60000, now - 59000, now - 56000, 4000, 1000, 1000, 200, 50, 800, 1200, 'smoke-model');
+  ins.run('m2', 'session_db', 'turn_1', 'main_turn', 'completed', now - 30000, now - 29000, now - 25000, 5000, 1000, 1000, 100, 20, 800, 1100, 'smoke-model');
+  db.prepare('INSERT INTO session (id, title, time_updated, time_deleted, parent_id) VALUES (?,?,?,NULL,NULL)').run('session_db', 'Smoke DB session', now);
+  db.close();
+
+  const env = { ...process.env, HOME: tmp, USERPROFILE: tmp, TOKEN_RATE_LANG: 'en' };
+  delete env.CLAUDE_SESSION_ID;
+  delete env.ZCODE_SESSION_ID;
+  delete env.TOKEN_RATE_SOURCE;
+  const script = path.join(root, 'scripts', 'token-stats.mjs');
+  const run = (args, extra = {}, input) =>
+    spawnSync(process.execPath, [script, ...args], {
+      env: { ...env, ...extra },
+      ...(input === undefined ? {} : { input }),
+      encoding: 'utf8',
+      timeout: 20000,
+    });
+  const parse = (r) => {
+    try { return JSON.parse((r.stdout || '').trim()); } catch { return null; }
+  };
+
+  const dbJson = parse(run(['--json']));
+  dbJson?.source === 'db' && dbJson?.calls === 2 && dbJson?.totals?.output === 300
+    ? ok('db source') : fail('db source', JSON.stringify(dbJson)?.slice(0, 200));
+
+  const list = run(['--list']);
+  list.stdout.includes('session_db') && list.stdout.includes('2 calls') && list.stdout.includes('Smoke DB session')
+    ? ok('db session list') : fail('db session list', JSON.stringify(list.stdout).slice(0, 200));
+
+  const hook = parse(run(['--hook'], { TOKEN_RATE_INJECT: '1', TOKEN_RATE_STYLE: 'compact' }, JSON.stringify({ session_id: 'session_db' })));
+  const hookCtx = hook?.additionalContext || '';
+  hookCtx.includes('in 2.0k') && hookCtx.includes('out 300')
+    ? ok('hook uses db session_id') : fail('hook uses db session_id', JSON.stringify(hookCtx).slice(0, 200));
+
+  const missing = run(['--hook'], { TOKEN_RATE_INJECT: '1' }, JSON.stringify({ session_id: 'session_missing' }));
+  (missing.stdout || '').trim() === ''
+    ? ok('hook no cross-session fallback') : fail('hook no cross-session fallback', JSON.stringify(missing.stdout).slice(0, 200));
+
+  // 删掉 DB，只留 rollout：应自动回退到 JSONL
+  fs.mkdirSync(rolloutDir, { recursive: true });
+  const rec = (t0) => JSON.stringify({ startedAt: new Date(t0).toISOString(), completedAt: new Date(t0 + 4000).toISOString(), durationMs: 4000, model: { modelId: 'smoke-model' }, usage: { inputTokens: 1000, cacheReadTokens: 800, outputTokens: 200, totalTokens: 1200 } });
+  fs.writeFileSync(path.join(rolloutDir, 'model-io-session_smoke.jsonl'), `${rec(now - 60000)}\n`);
+  fs.rmSync(dbPath, { force: true });
+  const fallback = parse(run(['--json']));
+  fallback?.source === 'jsonl' && fallback?.calls === 1
+    ? ok('jsonl fallback when db missing') : fail('jsonl fallback when db missing', JSON.stringify(fallback)?.slice(0, 200));
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 console.log(failures.length ? `\n${failures.length} check(s) FAILED` : '\nAll smoke checks passed.');
 process.exit(failures.length ? 1 : 0);

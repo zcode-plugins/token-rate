@@ -29,9 +29,9 @@ marketplace.json            root marketplace manifest so this repo is a valid ma
 
 ## Conventions
 
-- **Versioning** — SemVer. Bump `.zcode-plugin/plugin.json`, keep `marketplace.json` in sync, and add a `CHANGELOG.md` entry in the same change.
+- **Versioning** — SemVer. Bump `.zcode-plugin/plugin.json`, keep the repo `marketplace.json` (and the parent dev marketplace's catalog) in sync, and add a `CHANGELOG.md` entry in the same change.
 - **Language** — runtime user-visible strings live in the `L` dictionary in `scripts/token-stats.mjs` plus the description maps in `mcp-server.mjs`; update both `zh` and `en` together. Static texts (command, manifest) are bilingual by design.
-- **No secrets, no telemetry, no network calls** — the plugin only reads local files under `~/.zcode/cli/rollout`. Keep it that way.
+- **No secrets, no telemetry, no network calls** — the plugin only reads local ZCode records (`~/.zcode/cli/db/db.sqlite` read-only, plus `~/.zcode/cli/rollout`). Keep it that way.
 - **The hook must never block a session** — any failure path in hook mode stays silent with exit code 0.
 - **Commit style** — short imperative subject line (`feat:`, `fix:`, `docs:`, `ci:`, `chore:`).
 
@@ -55,9 +55,9 @@ By contributing, you agree that your contributions are licensed under the [MIT L
 
 感谢你为 Token 脉冲贡献代码！
 
-- 克隆仓库后运行 `node scripts/smoke-test.mjs`，提交前必须全绿；本插件**零 npm 依赖**，仅需 Node.js ≥ 18。
-- **版本**：遵循 SemVer；同时更新 `.zcode-plugin/plugin.json`、根 `marketplace.json` 并补充 `CHANGELOG.md`。
+- 克隆仓库后运行 `node scripts/smoke-test.mjs`，提交前必须全绿；本插件**零 npm 依赖**，仅需 Node.js ≥ 18（DB 数据源需运行时支持 `node:sqlite`，缺失时自动回退 JSONL）。
+- **版本**：遵循 SemVer；同时更新 `.zcode-plugin/plugin.json`、根 `marketplace.json`（以及上级 dev marketplace 的 `marketplace.json`）并补充 `CHANGELOG.md`。
 - **语言**：运行时文案集中在 `scripts/token-stats.mjs` 的 `L` 字典与 `mcp-server.mjs` 的描述表，中英文必须成对更新；静态文本保持中英并列。
-- **红线**：不引入密钥、遥测或网络请求（只读 `~/.zcode/cli/rollout` 本地文件）；hook 失败必须静默（退出码 0），绝不阻塞会话。
+- **红线**：不引入密钥、遥测或网络请求（只读 `~/.zcode/cli/db/db.sqlite` 与 `~/.zcode/cli/rollout` 本地记录）；hook 失败必须静默（退出码 0），绝不阻塞会话。
 - **提交**：`feat:` / `fix:` / `docs:` / `ci:` / `chore:` 简洁祈使句。
 - PR 请基于 `main` 分支并使用模板；CI 通过是合入前提。提交即表示同意以 [MIT](LICENSE) 授权。
