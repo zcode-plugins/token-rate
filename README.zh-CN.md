@@ -65,6 +65,8 @@ Token 脉冲读取 ZCode 的本地会话记录（`~/.zcode/cli/rollout/model-io-
 
 ZCode 的插件设置表单没有下拉控件——清单 schema 只接受 `string`、`number`、`boolean`、`directory`、`file`，分别渲染为文本/数字输入框和开关。因此两态选项统一做成开关；三态的 `language` 只能保留文本输入。旧版 `line_style` 键（`compact`/`detailed`）若已保存仍会生效。
 
+设置项的标题和说明直接取自 `userConfig`，清单 schema 没有 i18n 字段，因此固定为中文；插件商店中的名称与描述仍通过 `marketplace.json` 的 `*_i18n` 跟随界面语言。
+
 高级用法：环境变量 `TOKEN_RATE_INJECT`、`TOKEN_RATE_STYLE`、`TOKEN_RATE_WINDOW`、`TOKEN_RATE_LANG` 可临时覆盖上述设置（优先级最高）。
 
 ## 指标口径

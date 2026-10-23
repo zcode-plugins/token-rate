@@ -65,6 +65,8 @@ Open **Settings → Plugin Management → Installed → Token Pulse → details 
 
 ZCode's plugin settings form has no dropdown control — the manifest schema only accepts `string`, `number`, `boolean`, `directory` and `file`, rendered as text/number inputs and switches. Two-state options are therefore exposed as switches; the three-state `language` option has to remain a text field. The legacy `line_style` key (`compact`/`detailed`) is still honored if it was saved by an earlier version.
 
+Option titles and descriptions come straight from `userConfig`, which has no i18n fields, so they are written in Chinese only; the plugin store name and description still follow the UI language through `marketplace.json`.
+
 Advanced: the env vars `TOKEN_RATE_INJECT`, `TOKEN_RATE_STYLE`, `TOKEN_RATE_WINDOW` and `TOKEN_RATE_LANG` temporarily override the settings above (highest priority).
 
 ## Metrics reference

@@ -4,7 +4,7 @@
     {
       "name": "token-rate",
       "source": "./",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "description": "Real-time token rate & usage stats for ZCode sessions (MCP tool + /token-rate command + per-turn hook line); output language follows the ZCode UI language, detailed line/window configurable in plugin settings.",
       "displayName": "Token Pulse",
       "displayName_i18n": { "zh-CN": "Token 脉冲" },

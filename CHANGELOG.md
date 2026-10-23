@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-10-23
+
+### Changed
+
+- Plugin settings text is now single-language (Chinese) instead of bilingual. ZCode's `userConfig` schema only accepts plain `title` / `description` strings — `displayName_i18n` / `description_i18n` exist only on marketplace listings — so the settings form cannot switch language at runtime. Chinese matches the current ZCode UI language (`zh-CN`).
+- The manifest `description` is English-only; the Chinese listing text stays in `marketplace.json` under `description_i18n`, so the plugin store still follows the UI language.
+
 ## [0.3.3] - 2026-10-23
 
 ### Changed
