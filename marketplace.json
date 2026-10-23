@@ -1,0 +1,17 @@
+{
+  "name": "token-pulse",
+  "plugins": [
+    {
+      "name": "token-rate",
+      "source": "./",
+      "version": "0.2.5",
+      "description": "Real-time token rate & usage stats for ZCode sessions (MCP tool + /token-rate command + per-turn hook line); output language auto-follows the environment (zh/en).",
+      "displayName": "Token Pulse",
+      "displayName_i18n": { "zh-CN": "Token 脉冲" },
+      "description_i18n": {
+        "zh-CN": "在会话中实时展示 token 速率与用量：每轮回复结尾自动追加速率行 + MCP 工具 + /token-rate 命令，输出语言自动跟随（中/英）。"
+      },
+      "category": "developer-tools"
+    }
+  ]
+}

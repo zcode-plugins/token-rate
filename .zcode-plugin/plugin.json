@@ -1,0 +1,13 @@
+{
+  "name": "token-rate",
+  "version": "0.2.5",
+  "description": "Real-time token rate & usage stats for ZCode sessions (MCP tool + /token-rate command + per-turn hook line); output language auto-follows the environment (zh/en). ZCode 会话 token 速率与用量实时统计，输出语言自动跟随（中/英）。",
+  "author": {
+    "name": "zcode-plugins"
+  },
+  "homepage": "https://github.com/zcode-plugins/token-rate",
+  "license": "MIT",
+  "commands": "./commands",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}
